@@ -42,3 +42,9 @@ test("tracked public source excludes private operator details", () => {
 
   assert.deepEqual(violations, []);
 });
+
+test("release script preserves the Sparkle releases directory", () => {
+  const script = readFileSync(new URL("macos/script/package_release.sh", repositoryRoot), "utf8");
+  assert.match(script, /APPCAST_URL_PREFIX="\$\{APPCAST_URL_PREFIX%\/\}\/"/);
+  assert.match(script, /--download-url-prefix "\$APPCAST_URL_PREFIX"/);
+});

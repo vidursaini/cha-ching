@@ -19,6 +19,11 @@ NOTARY_KEY_ID="${NOTARY_KEY_ID:-}"
 NOTARY_ISSUER="${NOTARY_ISSUER:-}"
 SKIP_NOTARIZATION="${SKIP_NOTARIZATION:-0}"
 
+# Sparkle interprets a prefix without a trailing slash as a file URL and
+# replaces its final path component with the archive name.
+APPCAST_URL_PREFIX="${APPCAST_URL_PREFIX%/}/"
+APPCAST_LINK="${APPCAST_LINK%/}"
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
