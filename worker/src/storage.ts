@@ -637,6 +637,105 @@ export async function findProviderConfigByToken(
   return row ? rowToProviderConfigRecord(row) : undefined;
 }
 
+export async function listAllProviderConfigs(db: D1Database): Promise<ProviderConfigRecord[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT license_key, provider, display_name, enabled, encrypted_config, key_hint, webhook_path_token, updated_at
+       FROM provider_configs
+       ORDER BY provider, webhook_path_token`
+    )
+    .all<Record<string, unknown>>();
+
+  return (results ?? []).map(rowToProviderConfigRecord);
+}
+
+export async function migrateProviderConfigEncryption(
+  db: D1Database,
+  input: {
+    rotationId: string;
+    updates: Array<{
+      provider: ProviderName;
+      webhookPathToken: string;
+      previousEncryptedConfig: string;
+      migratedEncryptedConfig: string;
+    }>;
+    now?: string | undefined;
+  }
+): Promise<{ migrated: number; conflicts: number }> {
+  if (input.updates.length === 0) return { migrated: 0, conflicts: 0 };
+  const now = input.now ?? new Date().toISOString();
+  const statements = input.updates.flatMap(update => [
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO provider_config_encryption_backups
+         (rotation_id, provider, webhook_path_token, previous_encrypted_config, migrated_encrypted_config, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        input.rotationId,
+        update.provider,
+        update.webhookPathToken,
+        update.previousEncryptedConfig,
+        update.migratedEncryptedConfig,
+        now
+      ),
+    db
+      .prepare(
+        `UPDATE provider_configs
+         SET encrypted_config = ?, updated_at = ?
+         WHERE provider = ? AND webhook_path_token = ? AND encrypted_config = ?`
+      )
+      .bind(
+        update.migratedEncryptedConfig,
+        now,
+        update.provider,
+        update.webhookPathToken,
+        update.previousEncryptedConfig
+      )
+  ]);
+  const results = await db.batch(statements);
+  const updateResults = results.filter((_, index) => index % 2 === 1);
+  const migrated = updateResults.reduce((sum, result) => sum + Number(result.meta.changes ?? 0), 0);
+  return { migrated, conflicts: input.updates.length - migrated };
+}
+
+export async function rollbackProviderConfigEncryption(
+  db: D1Database,
+  rotationId: string,
+  now = new Date().toISOString()
+): Promise<{ total: number; restored: number; conflicts: number }> {
+  const { results } = await db
+    .prepare(
+      `SELECT provider, webhook_path_token, previous_encrypted_config, migrated_encrypted_config
+       FROM provider_config_encryption_backups
+       WHERE rotation_id = ?
+       ORDER BY provider, webhook_path_token`
+    )
+    .bind(rotationId)
+    .all<Record<string, unknown>>();
+  const backups = results ?? [];
+  if (backups.length === 0) return { total: 0, restored: 0, conflicts: 0 };
+
+  const statements = backups.map(row =>
+    db
+      .prepare(
+        `UPDATE provider_configs
+         SET encrypted_config = ?, updated_at = ?
+         WHERE provider = ? AND webhook_path_token = ? AND encrypted_config = ?`
+      )
+      .bind(
+        stringField(row.previous_encrypted_config),
+        now,
+        stringField(row.provider),
+        stringField(row.webhook_path_token),
+        stringField(row.migrated_encrypted_config)
+      )
+  );
+  const updateResults = await db.batch(statements);
+  const restored = updateResults.reduce((sum, result) => sum + Number(result.meta.changes ?? 0), 0);
+  return { total: backups.length, restored, conflicts: backups.length - restored };
+}
+
 async function fetchEventsSince(db: D1Database, licenseKey: string, sinceIso: string): Promise<PublicRevenueEvent[]> {
   const { results } = await db
     .prepare(

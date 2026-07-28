@@ -1,9 +1,8 @@
 import {
-  decryptJSON,
   encryptJSON,
   timingSafeSecretEqual,
-  verifyDodoStandardWebhookSignature,
-  verifySuperwallSvixSignature
+  verifyDodoStandardWebhookSignatures,
+  verifySuperwallSvixSignatures
 } from "./crypto";
 import { deviceTokenFromRequest } from "./auth";
 import { normalizeDemoEvent, normalizeRevenueCatEvent, normalizeSuperwallEvent } from "./normalizers";
@@ -18,6 +17,7 @@ import {
   insertRawWebhook,
   insertRevenueEvent,
   licenseKeyForDevice,
+  listAllProviderConfigs,
   listProviderConfigs,
   markDodoLicenseValidated,
   type LicenseRecord,
@@ -25,10 +25,17 @@ import {
   markLicenseEmailSent,
   type ProviderConfigRecord,
   recordRateLimitHit,
+  migrateProviderConfigEncryption,
+  rollbackProviderConfigEncryption,
   upsertProviderConfig,
   upsertDodoLicenseMirror,
   revenueSummary
 } from "./storage";
+import {
+  decryptProviderConfig,
+  planProviderEncryptionMigration,
+  providerEncryptionKeyring
+} from "./providerEncryption";
 import { buildLicenseEmail, sendResendEmail } from "./email";
 import { activateDodoLicense, DodoLicenseError, validateDodoLicense } from "./dodoLicense";
 import type { ProviderConfigSummary, ProviderName, RevenueCatWebhookPayload, SuperwallWebhookPayload } from "./types";
@@ -38,9 +45,12 @@ type WorkerEnv = Pick<Cloudflare.Env, "DB"> & {
   ADMIN_TOKEN?: string;
   SUPERWALL_WEBHOOK_SECRET?: string;
   PROVIDER_CONFIG_ENCRYPTION_KEY?: string;
+  PROVIDER_CONFIG_ENCRYPTION_KEY_NEXT?: string;
+  PROVIDER_CONFIG_MIGRATION_TOKEN?: string;
   DEFAULT_LICENSE_KEY?: string;
   DODO_PAYMENTS_API_KEY?: string;
   DODO_PAYMENTS_WEBHOOK_KEY?: string;
+  DODO_PAYMENTS_WEBHOOK_KEY_PREVIOUS?: string;
   DODO_PRODUCT_ID?: string;
   DODO_ENVIRONMENT?: "test" | "live";
   CHECKOUT_SUCCESS_URL?: string;
@@ -116,6 +126,9 @@ async function routeRequest(request: Request, env: WorkerEnv, url: URL): Promise
   if (request.method === "GET" && url.pathname === "/api/revenue-card") return handleRevenueCard(request, env, url);
   if (request.method === "GET" && url.pathname === "/api/sync") return handleSync(request, env, url);
   if (request.method === "POST" && url.pathname === "/api/dev/test-event") return handleTestEvent(request, env);
+  if (request.method === "POST" && url.pathname === "/api/admin/provider-configs/encryption") {
+    return handleProviderEncryptionMigration(request, env);
+  }
   if (request.method === "POST" && url.pathname === "/api/checkout" && isHosted(env)) return handleCheckout(request, env);
   return json({ error: "Not found" }, 404);
 }
@@ -136,6 +149,7 @@ function handleMetadata(env: WorkerEnv): Response {
 
 type SuperwallProviderConfig = {
   webhookSecret?: string | undefined;
+  webhookSecretPrevious?: string | undefined;
   displayName?: string | undefined;
 };
 
@@ -149,7 +163,7 @@ async function handleSuperwallWebhook(request: Request, env: WorkerEnv, webhookP
     return json({ error: "Legacy Superwall webhook endpoint is disabled. Use a per-app webhook URL." }, 410);
   }
 
-  if (webhookPathToken && !env.PROVIDER_CONFIG_ENCRYPTION_KEY) {
+  if (webhookPathToken && !providerConfigKeyring(env)) {
     return json({ error: "Provider config encryption key is not configured" }, 503);
   }
 
@@ -160,10 +174,12 @@ async function handleSuperwallWebhook(request: Request, env: WorkerEnv, webhookP
     return json({ error: "Unknown Superwall webhook endpoint" }, 404);
   }
 
-  const webhookSecret = resolvedConfig?.config.webhookSecret ?? env.SUPERWALL_WEBHOOK_SECRET;
+  const webhookSecrets = resolvedConfig
+    ? [resolvedConfig.config.webhookSecret, resolvedConfig.config.webhookSecretPrevious]
+    : [env.SUPERWALL_WEBHOOK_SECRET];
   const licenseKey = resolvedConfig?.record.licenseKey ?? env.DEFAULT_LICENSE_KEY ?? "__global__";
 
-  if (!webhookSecret) {
+  if (!webhookSecrets.some(Boolean)) {
     return json({ error: "Superwall webhook secret is not configured" }, 503);
   }
 
@@ -174,7 +190,7 @@ async function handleSuperwallWebhook(request: Request, env: WorkerEnv, webhookP
   const providerEventId = stringValue(payloadData.id) ?? request.headers.get("svix-id") ?? undefined;
   const dedupeScope = resolvedConfig?.record.id ?? "global";
   const rawId = `superwall_${dedupeScope}_${providerEventId ?? crypto.randomUUID()}`;
-  const signatureValid = await verifySuperwallSvixSignature(rawPayload, request.headers, webhookSecret);
+  const signatureValid = await verifySuperwallSvixSignatures(rawPayload, request.headers, webhookSecrets);
 
   await insertRawWebhook(env.DB, {
     id: rawId,
@@ -219,7 +235,7 @@ async function handleSuperwallWebhook(request: Request, env: WorkerEnv, webhookP
 }
 
 async function handleRevenueCatWebhook(request: Request, env: WorkerEnv, webhookPathToken: string): Promise<Response> {
-  if (!env.PROVIDER_CONFIG_ENCRYPTION_KEY) {
+  if (!providerConfigKeyring(env)) {
     return json({ error: "Provider config encryption key is not configured" }, 503);
   }
 
@@ -275,7 +291,10 @@ async function handleDodoWebhook(request: Request, env: WorkerEnv): Promise<Resp
 
   const rawPayload = await readLimitedText(request, MAX_WEBHOOK_BODY_BYTES);
   const receivedAt = new Date().toISOString();
-  const signatureValid = await verifyDodoStandardWebhookSignature(rawPayload, request.headers, env.DODO_PAYMENTS_WEBHOOK_KEY);
+  const signatureValid = await verifyDodoStandardWebhookSignatures(rawPayload, request.headers, [
+    env.DODO_PAYMENTS_WEBHOOK_KEY,
+    env.DODO_PAYMENTS_WEBHOOK_KEY_PREVIOUS
+  ]);
 
   if (!signatureValid) {
     return json({ error: "Invalid Dodo signature" }, 401);
@@ -431,7 +450,8 @@ async function handleProviderConfigs(request: Request, env: WorkerEnv, url: URL)
     return json({ error: "Method not allowed" }, 405);
   }
 
-  if (!env.PROVIDER_CONFIG_ENCRYPTION_KEY) {
+  const encryptionKeyring = providerConfigKeyring(env);
+  if (!encryptionKeyring) {
     return json({ error: "Provider config encryption key is not configured" }, 503);
   }
 
@@ -454,7 +474,7 @@ async function handleProviderConfigs(request: Request, env: WorkerEnv, url: URL)
     return json({ error: error instanceof Error ? error.message : String(error) }, 400);
   }
 
-  const encryptedConfig = await encryptJSON(providerConfig, env.PROVIDER_CONFIG_ENCRYPTION_KEY);
+  const encryptedConfig = await encryptJSON(providerConfig, encryptionKeyring.primary);
   const hasRequiredCredential =
     provider === "superwall"
       ? Boolean((providerConfig as SuperwallProviderConfig).webhookSecret)
@@ -601,19 +621,100 @@ async function resolveProviderConfig<T>(
   provider: ProviderName,
   webhookPathToken: string
 ): Promise<{ record: ProviderConfigRecord; config: T } | undefined> {
-  if (!env.PROVIDER_CONFIG_ENCRYPTION_KEY) return undefined;
+  const keyring = providerConfigKeyring(env);
+  if (!keyring) return undefined;
 
   const record = await findProviderConfigByToken(env.DB, provider, webhookPathToken);
   if (!record) return undefined;
 
   return {
     record,
-    config: await decryptJSON<T>(record.encryptedConfig, env.PROVIDER_CONFIG_ENCRYPTION_KEY)
+    config: (await decryptProviderConfig<T>(record.encryptedConfig, keyring)).value
   };
 }
 
+async function handleProviderEncryptionMigration(request: Request, env: WorkerEnv): Promise<Response> {
+  if (!isHosted(env)) return json({ error: "Not found" }, 404);
+  if (!env.PROVIDER_CONFIG_MIGRATION_TOKEN) return json({ error: "Migration is not enabled" }, 503);
+
+  const authorization = request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (!authorization || !(await timingSafeSecretEqual(authorization, env.PROVIDER_CONFIG_MIGRATION_TOKEN))) {
+    return json({ error: "Unauthorized" }, 401);
+  }
+
+  const body = await readJSONRecord(request, MAX_API_JSON_BODY_BYTES);
+  const action = stringValue(body.action) ?? "verify";
+  const rotationId = stringValue(body.rotationId);
+  if (action !== "verify" && (!rotationId || !/^[A-Za-z0-9_-]{8,64}$/.test(rotationId))) {
+    return json({ error: "A valid rotationId is required" }, 400);
+  }
+
+  if (action === "rollback") {
+    const result = await rollbackProviderConfigEncryption(env.DB, rotationId!);
+    return json({ action, rotationId, ...result });
+  }
+
+  const keyring = providerConfigKeyring(env);
+  if (!keyring) return json({ error: "Provider encryption keyring is not configured" }, 503);
+  const records = await listAllProviderConfigs(env.DB);
+
+  let plan;
+  try {
+    plan = await planProviderEncryptionMigration(records, keyring);
+  } catch {
+    return json({ error: "Provider configuration verification failed", total: records.length }, 409);
+  }
+
+  if (action === "verify" || body.dryRun === true) {
+    return json({
+      action: "verify",
+      total: plan.total,
+      primary: plan.alreadyPrimary,
+      previous: plan.updates.length
+    });
+  }
+  if (action !== "migrate") return json({ error: "Unsupported migration action" }, 400);
+
+  const migration = await migrateProviderConfigEncryption(env.DB, {
+    rotationId: rotationId!,
+    updates: plan.updates
+  });
+  if (migration.conflicts > 0) {
+    const rollback = await rollbackProviderConfigEncryption(env.DB, rotationId!);
+    return json(
+      {
+        error: "Provider configuration changed during migration; migrated records were rolled back",
+        total: plan.total,
+        conflicts: migration.conflicts,
+        restored: rollback.restored
+      },
+      409
+    );
+  }
+
+  return json({
+    action,
+    rotationId,
+    total: plan.total,
+    alreadyPrimary: plan.alreadyPrimary,
+    migrated: migration.migrated,
+    conflicts: 0
+  });
+}
+
+function providerConfigKeyring(env: WorkerEnv) {
+  return providerEncryptionKeyring({
+    current: env.PROVIDER_CONFIG_ENCRYPTION_KEY,
+    next: env.PROVIDER_CONFIG_ENCRYPTION_KEY_NEXT
+  });
+}
+
 function superwallConfigFromBody(body: Record<string, unknown>, displayName?: string): SuperwallProviderConfig {
-  return { webhookSecret: stringValue(body.webhookSecret), displayName };
+  return {
+    webhookSecret: stringValue(body.webhookSecret),
+    webhookSecretPrevious: stringValue(body.webhookSecretPrevious),
+    displayName
+  };
 }
 
 function revenueCatConfigFromBody(body: Record<string, unknown>, displayName?: string): RevenueCatProviderConfig {

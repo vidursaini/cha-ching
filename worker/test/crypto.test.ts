@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
-import { decryptJSON, encryptJSON, timingSafeSecretEqual, timingSafeStringEqual, verifyDodoStandardWebhookSignature } from "../src/crypto";
+import {
+  decryptJSON,
+  encryptJSON,
+  timingSafeSecretEqual,
+  timingSafeStringEqual,
+  verifyDodoStandardWebhookSignature,
+  verifyDodoStandardWebhookSignatures,
+  verifySuperwallSvixSignatures
+} from "../src/crypto";
 
 describe("provider config crypto", () => {
   it("round-trips encrypted provider config without deterministic ciphertext", async () => {
@@ -64,5 +72,46 @@ describe("provider config crypto", () => {
     });
 
     await expect(verifyDodoStandardWebhookSignature(payload, headers, secret, 1000)).resolves.toBe(true);
+  });
+
+  it("accepts either Dodo webhook secret during a zero-downtime rotation", async () => {
+    const payload = JSON.stringify({ type: "payment.succeeded" });
+    const previousSecret = "previous-dodo-secret";
+    const id = "msg_rotation_test";
+    const timestamp = "1000";
+    const signature = createHmac("sha256", previousSecret).update(`${id}.${timestamp}.${payload}`).digest("base64");
+    const headers = new Headers({
+      "webhook-id": id,
+      "webhook-timestamp": timestamp,
+      "webhook-signature": signature
+    });
+
+    await expect(
+      verifyDodoStandardWebhookSignatures(payload, headers, ["new-dodo-secret", previousSecret], 1000)
+    ).resolves.toBe(true);
+    await expect(
+      verifyDodoStandardWebhookSignatures(payload, headers, ["new-dodo-secret", "other-secret"], 1000)
+    ).resolves.toBe(false);
+  });
+
+  it("accepts either Superwall webhook secret during a zero-downtime rotation", async () => {
+    const payload = JSON.stringify({ type: "transaction" });
+    const previousKey = "previous-superwall-secret";
+    const previousSecret = `whsec_${Buffer.from(previousKey).toString("base64")}`;
+    const id = "msg_superwall_rotation";
+    const timestamp = "1000";
+    const signature = createHmac("sha256", previousKey).update(`${id}.${timestamp}.${payload}`).digest("base64");
+    const headers = new Headers({
+      "svix-id": id,
+      "svix-timestamp": timestamp,
+      "svix-signature": `v1,${signature}`
+    });
+
+    await expect(
+      verifySuperwallSvixSignatures(payload, headers, ["whsec_bmV3LXN1cGVyd2FsbC1zZWNyZXQ=", previousSecret], 1000)
+    ).resolves.toBe(true);
+    await expect(
+      verifySuperwallSvixSignatures(payload, headers, ["whsec_bmV3LXN1cGVyd2FsbC1zZWNyZXQ="], 1000)
+    ).resolves.toBe(false);
   });
 });

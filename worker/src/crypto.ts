@@ -26,6 +26,15 @@ export async function verifySuperwallSvixSignature(
   return candidates.some((candidate) => timingSafeEqual(candidate.replace(/^v\\d+=?/, ""), expected));
 }
 
+export async function verifySuperwallSvixSignatures(
+  payload: string,
+  headers: Headers,
+  secrets: Array<string | undefined>,
+  nowSeconds = Math.floor(Date.now() / 1000)
+): Promise<boolean> {
+  return verifyWithAnySecret(secrets, secret => verifySuperwallSvixSignature(payload, headers, secret, nowSeconds));
+}
+
 export async function verifyDodoStandardWebhookSignature(
   payload: string,
   headers: Headers,
@@ -50,6 +59,15 @@ export async function verifyDodoStandardWebhookSignature(
     .filter(Boolean);
 
   return candidates.some((candidate) => timingSafeEqual(candidate, expected));
+}
+
+export async function verifyDodoStandardWebhookSignatures(
+  payload: string,
+  headers: Headers,
+  secrets: Array<string | undefined>,
+  nowSeconds = Math.floor(Date.now() / 1000)
+): Promise<boolean> {
+  return verifyWithAnySecret(secrets, secret => verifyDodoStandardWebhookSignature(payload, headers, secret, nowSeconds));
 }
 
 export function randomToken(prefix: string): string {
@@ -151,4 +169,15 @@ function timingSafeEqual(left: string, right: string): boolean {
     diff |= leftBytes[index]! ^ rightBytes[index]!;
   }
   return diff === 0;
+}
+
+async function verifyWithAnySecret(
+  secrets: Array<string | undefined>,
+  verify: (secret: string) => Promise<boolean>
+): Promise<boolean> {
+  const uniqueSecrets = [...new Set(secrets.map(secret => secret?.trim()).filter((secret): secret is string => Boolean(secret)))];
+  if (uniqueSecrets.length === 0) return false;
+
+  const results = await Promise.all(uniqueSecrets.map(secret => verify(secret)));
+  return results.some(Boolean);
 }
