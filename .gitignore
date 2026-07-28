@@ -1,0 +1,25 @@
+.DS_Store
+
+# Swift
+.build/
+dist/
+DerivedData/
+*.xcuserdata/
+
+# Node / Cloudflare
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.env.*
+worker/wrangler.hosted.jsonc
+
+# Logs
+*.log
+npm-debug.log*
+
+# Secrets / local credentials
+*.p8
+*.pem
+*.key
+secrets.json

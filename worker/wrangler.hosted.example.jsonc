@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "chaching-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.01
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "DEPLOYMENT_MODE": "hosted",
+    "DODO_ENVIRONMENT": "live",
+    "CHECKOUT_SUCCESS_URL": "https://example.com/cha-ching/success",
+    "CHECKOUT_CANCEL_URL": "https://example.com/cha-ching",
+    "ALLOWED_CORS_ORIGINS": "https://example.com",
+    "LICENSE_EMAIL_FROM": "Cha-Ching <cha-ching@example.com>",
+    "SUPPORT_EMAIL": "support@example.com",
+    "MAC_DOWNLOAD_URL": "https://example.com/downloads/ChaChing.dmg",
+    "RAW_WEBHOOK_RETENTION_DAYS": "30"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

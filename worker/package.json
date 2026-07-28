@@ -1,0 +1,33 @@
+{
+  "name": "chaching-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "cloudflare": {
+    "bindings": {
+      "SELF_HOST_SETUP_TOKEN": {
+        "description": "A unique owner setup secret with at least 24 characters. Generate it with `openssl rand -base64 32`."
+      },
+      "PROVIDER_CONFIG_ENCRYPTION_KEY": {
+        "description": "A different random secret used to encrypt provider credentials in D1. Generate it with `openssl rand -base64 32`."
+      }
+    }
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "npm run db:migrations:apply && wrangler deploy",
+    "deploy:hosted": "npm run db:migrations:apply:hosted && wrangler deploy --config wrangler.hosted.jsonc",
+    "db:migrations:apply": "wrangler d1 migrations apply DB --remote",
+    "db:migrations:apply:hosted": "wrangler d1 migrations apply DB --remote --config wrangler.hosted.jsonc",
+    "types": "wrangler types",
+    "types:hosted": "wrangler types --config wrangler.hosted.jsonc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.114.0"
+  }
+}
