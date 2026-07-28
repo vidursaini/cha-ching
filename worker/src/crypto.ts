@@ -41,7 +41,8 @@ export async function verifyDodoStandardWebhookSignature(
   if (!Number.isFinite(timestampSeconds) || Math.abs(nowSeconds - timestampSeconds) > 300) return false;
 
   const signedContent = `${id}.${timestamp}.${payload}`;
-  const expected = await hmacBase64(secret, signedContent, "utf8");
+  const prefixedSecret = secret.match(/^whsec_(.+)$/)?.[1];
+  const expected = await hmacBase64(prefixedSecret ?? secret, signedContent, prefixedSecret ? "base64" : "utf8");
   const candidates = signatureHeader
     .split(" ")
     .flatMap((chunk) => chunk.split(","))

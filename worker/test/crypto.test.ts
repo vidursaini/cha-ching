@@ -49,4 +49,20 @@ describe("provider config crypto", () => {
     await expect(verifyDodoStandardWebhookSignature(payload, headers, secret, 1000)).resolves.toBe(true);
     await expect(verifyDodoStandardWebhookSignature(payload, headers, secret, 1301)).resolves.toBe(false);
   });
+
+  it("verifies Dodo whsec secrets using their base64-encoded key material", async () => {
+    const payload = JSON.stringify({ type: "payment.succeeded" });
+    const key = "dodo-webhook-secret";
+    const secret = `whsec_${Buffer.from(key).toString("base64")}`;
+    const id = "msg_prefixed_test";
+    const timestamp = "1000";
+    const signature = createHmac("sha256", key).update(`${id}.${timestamp}.${payload}`).digest("base64");
+    const headers = new Headers({
+      "webhook-id": id,
+      "webhook-timestamp": timestamp,
+      "webhook-signature": `v1,${signature}`
+    });
+
+    await expect(verifyDodoStandardWebhookSignature(payload, headers, secret, 1000)).resolves.toBe(true);
+  });
 });
