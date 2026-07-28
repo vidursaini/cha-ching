@@ -48,3 +48,14 @@ test("release script preserves the Sparkle releases directory", () => {
   assert.match(script, /APPCAST_URL_PREFIX="\$\{APPCAST_URL_PREFIX%\/\}\/"/);
   assert.match(script, /--download-url-prefix "\$APPCAST_URL_PREFIX"/);
 });
+
+test("release DMG verification requires signing, stapling, and Gatekeeper acceptance", () => {
+  const script = readFileSync(
+    new URL("macos/script/verify_release_dmg.sh", repositoryRoot),
+    "utf8"
+  );
+
+  assert.match(script, /codesign --verify/);
+  assert.match(script, /stapler validate/);
+  assert.match(script, /spctl --assess --type open/);
+});
