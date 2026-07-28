@@ -98,6 +98,7 @@ describe("provider config crypto", () => {
     const payload = JSON.stringify({ type: "transaction" });
     const previousKey = "previous-superwall-secret";
     const previousSecret = `whsec_${Buffer.from(previousKey).toString("base64")}`;
+    const newSecret = `whsec_${Buffer.from("new-superwall-secret").toString("base64")}`;
     const id = "msg_superwall_rotation";
     const timestamp = "1000";
     const signature = createHmac("sha256", previousKey).update(`${id}.${timestamp}.${payload}`).digest("base64");
@@ -108,10 +109,8 @@ describe("provider config crypto", () => {
     });
 
     await expect(
-      verifySuperwallSvixSignatures(payload, headers, ["whsec_bmV3LXN1cGVyd2FsbC1zZWNyZXQ=", previousSecret], 1000)
+      verifySuperwallSvixSignatures(payload, headers, [newSecret, previousSecret], 1000)
     ).resolves.toBe(true);
-    await expect(
-      verifySuperwallSvixSignatures(payload, headers, ["whsec_bmV3LXN1cGVyd2FsbC1zZWNyZXQ="], 1000)
-    ).resolves.toBe(false);
+    await expect(verifySuperwallSvixSignatures(payload, headers, [newSecret], 1000)).resolves.toBe(false);
   });
 });
