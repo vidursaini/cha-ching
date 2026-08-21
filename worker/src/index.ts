@@ -559,8 +559,10 @@ async function handleTestEvent(request: Request, env: WorkerEnv): Promise<Respon
   const rateLimitResponse = await enforceRateLimit(env, request, rateLimitPolicies.testEvent);
   if (rateLimitResponse) return rateLimitResponse;
 
-  const token = request.headers.get("x-admin-token") ?? request.headers.get("authorization")?.replace(/^Bearer\\s+/i, "");
-  if (!env.ADMIN_TOKEN || token !== env.ADMIN_TOKEN) return json({ error: "Unauthorized" }, 401);
+  const token = request.headers.get("x-admin-token") ?? request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!env.ADMIN_TOKEN || !token || !(await timingSafeSecretEqual(token, env.ADMIN_TOKEN))) {
+    return json({ error: "Unauthorized" }, 401);
+  }
   const body = await readJSONRecord(request, MAX_API_JSON_BODY_BYTES);
   const event = normalizeDemoEvent(body);
   const rawId = `demo_${event.sourceEventId}`;

@@ -7,7 +7,6 @@ This record intentionally contains credential names and verification outcomes on
 - Cloudflare Worker: `chaching-worker`
 - Hosted API: `https://chaching-api.vidursaini.com`
 - Providers: Cloudflare, Dodo Payments, Resend, and Superwall
-- Source deployment used for compatibility: `a9ffbe55-1269-4bf6-8460-4dd8fcd1d042`
 
 ## Completed rotations
 

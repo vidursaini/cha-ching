@@ -23,7 +23,7 @@ export async function verifySuperwallSvixSignature(
     .map((chunk) => chunk.trim())
     .filter(Boolean);
 
-  return candidates.some((candidate) => timingSafeEqual(candidate.replace(/^v\\d+=?/, ""), expected));
+  return candidates.some((candidate) => timingSafeEqual(candidate.replace(/^v\d+=?/, ""), expected));
 }
 
 export async function verifySuperwallSvixSignatures(
@@ -55,7 +55,7 @@ export async function verifyDodoStandardWebhookSignature(
   const candidates = signatureHeader
     .split(" ")
     .flatMap((chunk) => chunk.split(","))
-    .map((chunk) => chunk.trim().replace(/^v\\d+=?/, ""))
+    .map((chunk) => chunk.trim().replace(/^v\d+=?/, ""))
     .filter(Boolean);
 
   return candidates.some((candidate) => timingSafeEqual(candidate, expected));
